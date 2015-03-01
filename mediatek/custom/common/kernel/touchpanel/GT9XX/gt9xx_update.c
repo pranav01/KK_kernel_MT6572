@@ -39,7 +39,6 @@
 #define GUP_REG_FW_MSG              0x41E4
 #define GUP_REG_PID_VID             0x8140
 
-//#define GTP_BOOT_FW_CONFIG_SD_UPDATE
 #define GUP_SEARCH_FILE_TIMES       50
 #define UPDATE_FILE_PATH_2          "/data/goodix/_goodix_update_.bin"
 #define UPDATE_FILE_PATH_1          "/sdcard/goodix/_goodix_update_.bin"
@@ -92,7 +91,6 @@ typedef struct
 
 st_update_msg update_msg;
 struct i2c_client *guitar_client = NULL;
-extern struct i2c_client *i2c_client_point;
 u16 show_len;
 u16 total_len;
 u8 *fw_buf;
@@ -244,8 +242,6 @@ static u8 gup_get_ic_fw_msg(struct i2c_client *client)
 s32 gup_enter_update_mode(struct i2c_client *client)
 {
     s32 ret = -1;
-    s32 retry = 0;
-    u8 rd_buf[3];
 
     //step1:RST output low last at least 2ms
     GTP_GPIO_OUTPUT(GTP_RST_PORT, 0);
@@ -257,80 +253,24 @@ s32 gup_enter_update_mode(struct i2c_client *client)
 
     //step3:RST output high reset guitar
     GTP_GPIO_OUTPUT(GTP_RST_PORT, 1);
-
-    //20121211 modify start
-    msleep(5);
-
-    while (retry++ < 200)
-    {
-        //step4:Hold ss51 & dsp
-        ret = gup_set_ic_msg(client, _rRW_MISCTL__SWRST_B0_, 0x0C);
-
-        if (ret <= 0)
-        {
-            GTP_DEBUG("Hold ss51 & dsp I2C error,retry:%d", retry);
-            continue;
-        }
-
-        //step5:Confirm hold
-        ret = gup_get_ic_msg(client, _rRW_MISCTL__SWRST_B0_, rd_buf, 1);
-
-        if (ret <= 0)
-        {
-            GTP_DEBUG("Hold ss51 & dsp I2C error,retry:%d", retry);
-            continue;
-        }
-
-        if (0x0C == rd_buf[GTP_ADDR_LENGTH])
-        {
-            GTP_DEBUG("Hold ss51 & dsp confirm SUCCESS");
-            break;
-        }
-
-        GTP_DEBUG("Hold ss51 & dsp confirm 0x4180 failed,value:%d", rd_buf[GTP_ADDR_LENGTH]);
-    }
-
-    if (retry >= 200)
-    {
-        GTP_ERROR("Enter update Hold ss51 failed.");
-        return FAIL;
-    }
-
-    //step6:DSP_CK and DSP_ALU_CK PowerOn
-    ret = gup_set_ic_msg(client, 0x4010, 0x00);
-
-    //20121211 modify end
+    msleep(20);
+    //step4:Hold ss51 & dsp
+    ret = gup_set_ic_msg(client, _rRW_MISCTL__SWRST_B0_, 0x0C);
 
     return ret;
 }
 
 void gup_leave_update_mode(void)
 {
-    s32 ret = 0;
-    //GTP_GPIO_AS_INT(GTP_INT_PORT);
+    GTP_GPIO_AS_INT(GTP_INT_PORT);
 
     GTP_DEBUG("[leave_update_mode]reset chip.");
     gtp_reset_guitar(guitar_client, 20);
-	
-    msleep(100);
-    GTP_DEBUG("[update_proc]send config.");
-    ret = gtp_send_cfg(guitar_client);
-
-    if (ret < 0)
-    {
-        GTP_ERROR("[update_proc]send config fail.");
-    }
 }
 
 static u8 gup_enter_upadte_judge(st_fw_head *fw_head)
 {
     u16 u16_tmp;
-    //Get the correct nvram data
-    //The correct conditions:
-    //1. the hardware info is the same
-    //2. the product id is the same
-    //3. the firmware version in update file is greater than the firmware version in ic
-    //or the check sum in ic is wrong
 
     u16_tmp = fw_head->vid;
     fw_head->vid = (u16)(u16_tmp >> 8) + (u16)(u16_tmp << 8);
@@ -355,7 +295,7 @@ static u8 gup_enter_upadte_judge(st_fw_head *fw_head)
             return SUCCESS;
         }
 
-        if ((!memcmp(fw_head->pid, update_msg.ic_fw_msg.pid, strlen(update_msg.ic_fw_msg.pid))) ||
+        if ((!memcmp(fw_head->pid, update_msg.ic_fw_msg.pid, strlen(fw_head->pid))) ||
                 (!memcmp(update_msg.ic_fw_msg.pid, "91XX", 4)) ||
                 (!memcmp(fw_head->pid, "91XX", 4)))
         {
@@ -382,7 +322,6 @@ static u8 gup_enter_upadte_judge(st_fw_head *fw_head)
 
     return FAIL;
 }
-
 
 #ifdef GTP_BOOT_FW_CONFIG_SD_UPDATE
 static u8 ascii2hex(u8 a)
@@ -536,16 +475,11 @@ update_cfg_file_failed:
     kfree(file_config);
     return ret;
 }
-#endif
 
 static u8 gup_load_update_file(st_fw_head *fw_head)
 {
     s32 ret = 0;
-
-    mm_segment_t fs = get_fs();
-    set_fs(KERNEL_DS);
-
-    ret = update_msg.file->f_op->llseek(update_msg.file, 0, SEEK_SET);
+    update_msg.file->f_op->llseek(update_msg.file, 0, SEEK_SET);
     //update_msg.file->f_pos = 0;
     ret = update_msg.file->f_op->read(update_msg.file, (char *)fw_head, FW_HEAD_LENGTH, &update_msg.file->f_pos);
 
@@ -567,10 +501,9 @@ static u8 gup_load_update_file(st_fw_head *fw_head)
         return FAIL;
     }
 
-    set_fs(fs);
-
     return SUCCESS;
 }
+#endif
 
 static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, u8 *path)
 {
@@ -578,8 +511,8 @@ static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, 
     s32 i = 0;
     s32 fw_checksum = 0;
     u8 empty_test = 0;
+    //u8 buf[FW_HEAD_LENGTH];
 
-    update_msg.file = NULL;
 
     if (path)
     {
@@ -594,9 +527,9 @@ static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, 
     }
 
 #ifdef GTP_BOOT_FW_CONFIG_SD_UPDATE
-
     else
     {
+
         //Begin to search update file,the config file & firmware file must be in the same path,single or double.
         for (i = 0; i < GUP_SEARCH_FILE_TIMES; i++)
         {
@@ -677,9 +610,7 @@ static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, 
 
 
 
-#endif //end BOOT_FW_CONFIG_SD_UPDATE
-
-    if ((!IS_ERR(update_msg.file)) && (update_msg.file != NULL))
+    if (!IS_ERR(update_msg.file))
     {
         ret = gup_load_update_file(fw_head);
         filp_close(update_msg.file, NULL);
@@ -689,15 +620,14 @@ static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, 
             return FAIL;
         }
     }
-
-
-
     else //default FW
     {
         GTP_DEBUG("Load Default FW.");
         memcpy(fw_head, gtp_default_FW, FW_HEAD_LENGTH);
         memcpy(fw_buf, gtp_default_FW + FW_HEAD_LENGTH, FW_LENGTH);
     }
+
+#endif //end BOOT_FW_CONFIG_SD_UPDATE
 
     //check firmware legality
     fw_checksum = 0;
@@ -723,8 +653,25 @@ static u8 gup_check_update_file(struct i2c_client *client, st_fw_head *fw_head, 
 
     }
 
-    return SUCCESS;
+    //Get the correct nvram data
+    //The correct conditions:
+    //1. the hardware info is the same
+    //2. the product id is the same
+    //3. the firmware version in update file is greater than the firmware version in ic
+    //or the check sum in ic is wrong
 
+    ret = gup_enter_upadte_judge(fw_head);
+
+    if (SUCCESS == ret)
+    {
+        GTP_INFO("Check *.bin file success.");
+        return SUCCESS;
+    }
+    else
+    {
+        GTP_INFO("Check *.bin file fail.");
+        return FAIL;
+    }
 }
 
 
@@ -1560,19 +1507,7 @@ s32 gup_update_proc(void *dir)
         msleep(3000);                               //wait main thread to be completed
     }
 
-    if (guitar_client == NULL)                                          //20121212
-    {
-        guitar_client = i2c_client_point;
-    }
-
-    ret = gup_check_update_file(guitar_client, &fw_head, (u8 *)dir);    //20121212
-    if (FAIL == ret)
-    {
-        GTP_ERROR("[update_proc]check update file fail.");
-        goto update_fail;
-    }
-
-    //gtp_reset_guitar(guitar_client, 20);			//no need 20130419
+    gtp_reset_guitar(guitar_client, 20);
     ret = gup_get_ic_fw_msg(guitar_client);
 
     if (FAIL == ret)
@@ -1581,10 +1516,10 @@ s32 gup_update_proc(void *dir)
         goto update_fail;
     }
 
-    ret = gup_enter_upadte_judge(&fw_head);                             //20121212
-#ifdef GTP_FORCE_UPDATE_FW
-    ret = SUCCESS;								//for test
-#endif
+    update_msg.old_fs = get_fs();
+    set_fs(KERNEL_DS);
+    ret = gup_check_update_file(guitar_client, &fw_head, (u8 *)dir);
+    set_fs(update_msg.old_fs);
 
     if (FAIL == ret)
     {
@@ -1650,17 +1585,10 @@ s32 gup_update_proc(void *dir)
         goto update_fail;
     }
 
-//original source code
-    /*
-        GTP_DEBUG("[update_proc]leave update mode.");
-        gup_leave_update_mode();
-    */
-    //Modified by Andrew --start
-    //GTP_DEBUG("[update_proc]reset chip.");
-    //gtp_reset_guitar(guitar_client, 20);
-    //Modified by Andrew --end
+    GTP_DEBUG("[update_proc]leave update mode.");
+    gup_leave_update_mode();
 
-#if 0
+
     msleep(100);
     GTP_DEBUG("[update_proc]send config.");
     ret = gtp_send_cfg(guitar_client);
@@ -1669,18 +1597,11 @@ s32 gup_update_proc(void *dir)
     {
         GTP_ERROR("[update_proc]send config fail.");
     }
-#endif
+
     show_len = 100;
     total_len = 100;
     kfree(fw_buf);
-
-    //Modified by Andrew --start
-    GTP_DEBUG("[update_proc]leave update mode.");
-    gup_leave_update_mode();
-    //Modified by Andrew --end
-
     return SUCCESS;
-
 update_fail:
     show_len = 200;
     total_len = 100;
@@ -1715,6 +1636,9 @@ static u8 gup_download_fw_ss51(struct i2c_client *client)
     u8 *fw_ss51 = NULL;
     u8  retry = 0;
     s32 ret = 0;
+
+
+
 
     GTP_INFO("[download_fw_ss51]Begin burn ss51 firmware---->>");
 
@@ -1932,6 +1856,7 @@ exit_download_fw_dsp:
 
 
 
+
 s32 gup_fw_download_proc(void *dir)
 {
     u8 buf[3];
@@ -1947,21 +1872,7 @@ s32 gup_fw_download_proc(void *dir)
         msleep(2000);                               //wait main thread to be completed
     }
 
-    if (guitar_client == NULL)                                  //20121212
-    {
-        guitar_client = i2c_client_point;
-    }
-
 download:
-    ret = gup_check_update_file(guitar_client, &fw_head, (u8 *)dir);
-
-    if (FAIL == ret)
-    {
-        GTP_ERROR("[fw_download_proc]check update file fail.");
-        goto download_fail;
-    }
-
-    //gtp_reset_guitar(guitar_client, 20);                        //no need 20130419
     ret = gup_get_ic_fw_msg(guitar_client);
 
     if (FAIL == ret)
@@ -1970,15 +1881,10 @@ download:
         goto download_fail;
     }
 
-    ret = gup_enter_upadte_judge(&fw_head);                     //20121212
-
-    if (FAIL == ret)
-    {
-        GTP_ERROR("[update_proc]Check *.bin file fail.");
-        goto download_fail;
-    }
-
-    ret = gup_enter_update_mode(guitar_client);                 //20121212
+    update_msg.old_fs = get_fs();
+    set_fs(KERNEL_DS);
+    ret = gup_check_update_file(guitar_client, &fw_head, (u8 *)dir);
+    set_fs(update_msg.old_fs);
 
     if (FAIL == ret)
     {
@@ -2080,6 +1986,8 @@ download_fail:
 }
 
 
+
+
 u8 gup_init_fw_proc(struct i2c_client *client)
 {
     struct task_struct *thread = NULL;
@@ -2099,4 +2007,3 @@ u8 gup_init_fw_proc(struct i2c_client *client)
 
     return 0;
 }
-
