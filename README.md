@@ -1,7 +1,5 @@
-Explay Golf
-
-export PATH=~/Your_Toolchain_PATH/
-for example /alps/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.6/bin
+Wiko IGGY and Explay Golf source 3.4.67
+===============
 
 Build Command:
 
@@ -11,3 +9,4 @@ cd KK_kernel_MT6572
 Then, to create the boot.img:
 
 ./pack_bootimage.sh
+
